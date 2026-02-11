@@ -1,0 +1,212 @@
+use clap::Parser;
+use serde::{Deserialize, Serialize};
+use std::env;
+use std::io::{self, Write};
+use std::process::{Command, Stdio};
+
+#[derive(Parser)]
+#[command(name = "gy")]
+#[command(about = "AI-powered git commit message generator", long_about = None)]
+struct Args {
+    /// Model to use for generation
+    #[arg(long, default_value = "claude-sonnet-4-20250514")]
+    model: String,
+}
+
+#[derive(Serialize)]
+struct AnthropicRequest {
+    model: String,
+    max_tokens: u32,
+    messages: Vec<Message>,
+    system: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Message {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct AnthropicResponse {
+    content: Vec<Content>,
+}
+
+#[derive(Deserialize)]
+struct Content {
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct ErrorResponse {
+    error: ErrorDetail,
+}
+
+#[derive(Deserialize)]
+struct ErrorDetail {
+    message: String,
+}
+
+fn main() {
+    let args = Args::parse();
+
+    // Check for API key
+    let api_key = match env::var("ANTHROPIC_API_KEY") {
+        Ok(key) => key,
+        Err(_) => {
+            eprintln!("Set ANTHROPIC_API_KEY environment variable.");
+            std::process::exit(1);
+        }
+    };
+
+    // Get staged diff
+    let diff = match get_staged_diff() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if diff.trim().is_empty() {
+        eprintln!("Nothing staged. Use git add first.");
+        std::process::exit(1);
+    }
+
+    // Generate commit message
+    let commit_message = match generate_commit_message(&api_key, &args.model, &diff) {
+        Ok(msg) => msg,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if commit_message.trim().is_empty() {
+        eprintln!("Failed to generate commit message.");
+        std::process::exit(1);
+    }
+
+    // Display and prompt
+    println!("{}", commit_message);
+    print!("[y]es / [e]dit / [n]o: ");
+    io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let choice = input.trim().to_lowercase();
+
+    match choice.as_str() {
+        "y" | "yes" => {
+            commit(&commit_message);
+        }
+        "e" | "edit" => {
+            let edited = edit_message(&commit_message);
+            commit(&edited);
+        }
+        "n" | "no" => {
+            eprintln!("Aborted.");
+            std::process::exit(1);
+        }
+        _ => {
+            eprintln!("Invalid choice. Aborted.");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn get_staged_diff() -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["diff", "--staged"])
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn generate_commit_message(api_key: &str, model: &str, diff: &str) -> Result<String, String> {
+    let system_prompt = "You are a git commit message generator. Given a git diff, produce a single conventional commit message (type: description). Use lowercase. Be concise. Output ONLY the commit message, nothing else. If the diff includes multiple logical changes, use the most significant one for the type. Types: feat, fix, refactor, docs, style, test, chore, perf, ci, build.";
+
+    let request = AnthropicRequest {
+        model: model.to_string(),
+        max_tokens: 256,
+        messages: vec![Message {
+            role: "user".to_string(),
+            content: diff.to_string(),
+        }],
+        system: system_prompt.to_string(),
+    };
+
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&request)
+        .send()
+        .map_err(|e| format!("API request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().unwrap_or_default();
+
+        // Try to parse as error response
+        if let Ok(error_resp) = serde_json::from_str::<ErrorResponse>(&error_text) {
+            return Err(format!("API error: {}", error_resp.error.message));
+        }
+
+        return Err(format!("API error ({}): {}", status, error_text));
+    }
+
+    let api_response: AnthropicResponse = response
+        .json()
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    if api_response.content.is_empty() {
+        return Err("Empty response from API".to_string());
+    }
+
+    Ok(api_response.content[0].text.trim().to_string())
+}
+
+fn edit_message(message: &str) -> String {
+    let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+
+    let temp_file = "/tmp/gy_commit_msg.txt";
+    std::fs::write(temp_file, message).expect("Failed to write temp file");
+
+    let status = Command::new(&editor)
+        .arg(temp_file)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .expect("Failed to launch editor");
+
+    if !status.success() {
+        eprintln!("Editor exited with error. Using original message.");
+        return message.to_string();
+    }
+
+    std::fs::read_to_string(temp_file)
+        .expect("Failed to read edited file")
+        .trim()
+        .to_string()
+}
+
+fn commit(message: &str) {
+    let status = Command::new("git")
+        .args(["commit", "-m", message])
+        .status()
+        .expect("Failed to run git commit");
+
+    if !status.success() {
+        eprintln!("git commit failed");
+        std::process::exit(1);
+    }
+}
