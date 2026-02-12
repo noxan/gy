@@ -1,7 +1,9 @@
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 #[derive(Parser)]
@@ -47,17 +49,16 @@ struct ErrorDetail {
     message: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct Config {
+    anthropic_api_key: String,
+}
+
 fn main() {
     let args = Args::parse();
 
-    // Check for API key
-    let api_key = match env::var("ANTHROPIC_API_KEY") {
-        Ok(key) => key,
-        Err(_) => {
-            eprintln!("Set ANTHROPIC_API_KEY environment variable.");
-            std::process::exit(1);
-        }
-    };
+    // Get or prompt for API key
+    let api_key = get_or_prompt_api_key();
 
     // Get staged diff
     let diff = match get_staged_diff() {
@@ -111,6 +112,118 @@ fn main() {
         _ => {
             eprintln!("Invalid choice. Aborted.");
             std::process::exit(1);
+        }
+    }
+}
+
+fn get_config_path() -> PathBuf {
+    let home = dirs::home_dir().expect("Could not find home directory");
+    home.join(".gy_config.json")
+}
+
+fn load_config() -> Option<Config> {
+    let config_path = get_config_path();
+    if !config_path.exists() {
+        return None;
+    }
+    let contents = fs::read_to_string(config_path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+fn save_config(config: &Config) -> Result<(), String> {
+    let config_path = get_config_path();
+    let json = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(config_path, json)
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+    Ok(())
+}
+
+fn validate_api_key(api_key: &str) -> Result<(), String> {
+    let request = AnthropicRequest {
+        model: "claude-sonnet-4-20250514".to_string(),
+        max_tokens: 10,
+        messages: vec![Message {
+            role: "user".to_string(),
+            content: "test".to_string(),
+        }],
+        system: "Reply with ok".to_string(),
+    };
+
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&request)
+        .send()
+        .map_err(|e| format!("API request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().unwrap_or_default();
+
+        if let Ok(error_resp) = serde_json::from_str::<ErrorResponse>(&error_text) {
+            return Err(error_resp.error.message);
+        }
+
+        return Err(format!("API error ({})", status));
+    }
+
+    Ok(())
+}
+
+fn get_or_prompt_api_key() -> String {
+    // First check environment variable
+    if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
+        if !key.is_empty() {
+            return key;
+        }
+    }
+
+    // Then check config file
+    if let Some(config) = load_config() {
+        if !config.anthropic_api_key.is_empty() {
+            return config.anthropic_api_key;
+        }
+    }
+
+    // Prompt user for API key
+    loop {
+        print!("Enter your Anthropic API key: ");
+        io::stdout().flush().unwrap();
+
+        let mut api_key = String::new();
+        io::stdin().read_line(&mut api_key).unwrap();
+        let api_key = api_key.trim().to_string();
+
+        if api_key.is_empty() {
+            eprintln!("API key cannot be empty. Please try again.");
+            continue;
+        }
+
+        print!("Validating API key...");
+        io::stdout().flush().unwrap();
+
+        match validate_api_key(&api_key) {
+            Ok(_) => {
+                println!(" Valid!");
+                let config = Config {
+                    anthropic_api_key: api_key.clone(),
+                };
+                if let Err(e) = save_config(&config) {
+                    eprintln!("Warning: Failed to save config: {}", e);
+                } else {
+                    println!("API key saved to {}", get_config_path().display());
+                }
+                return api_key;
+            }
+            Err(e) => {
+                println!(" Invalid!");
+                eprintln!("Error: {}", e);
+                eprintln!("Please try again with a valid API key.");
+            }
         }
     }
 }
