@@ -70,8 +70,26 @@ fn main() {
     };
 
     if diff.trim().is_empty() {
-        eprintln!("Nothing staged. Use git add first.");
-        std::process::exit(1);
+        // No staged changes - check for unstaged changes
+        match get_unstaged_diff() {
+            Ok(unstaged_diff) if !unstaged_diff.trim().is_empty() => {
+                eprintln!("No changes are staged. Here's what's unstaged:\n");
+                match generate_commit_message(&api_key, &args.model, &unstaged_diff) {
+                    Ok(summary) => {
+                        println!("{}\n", summary);
+                    }
+                    Err(_) => {
+                        // If AI generation fails, just show a simple message
+                    }
+                }
+                eprintln!("Use 'git add' to stage changes.");
+                std::process::exit(1);
+            }
+            _ => {
+                eprintln!("Nothing staged. Use git add first.");
+                std::process::exit(1);
+            }
+        }
     }
 
     // Generate commit message
@@ -231,6 +249,19 @@ fn get_or_prompt_api_key() -> String {
 fn get_staged_diff() -> Result<String, String> {
     let output = Command::new("git")
         .args(["diff", "--staged"])
+        .output()
+        .map_err(|e| format!("Failed to run git: {}", e))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn get_unstaged_diff() -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["diff"])
         .output()
         .map_err(|e| format!("Failed to run git: {}", e))?;
 
