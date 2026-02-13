@@ -1,10 +1,12 @@
 use clap::Parser;
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 #[derive(Parser)]
 #[command(name = "gy")]
@@ -52,6 +54,11 @@ struct ErrorDetail {
 #[derive(Serialize, Deserialize)]
 struct Config {
     anthropic_api_key: String,
+}
+
+enum EditError {
+    Aborted,
+    Other(String),
 }
 
 fn main() {
@@ -106,32 +113,20 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Display and prompt
-    println!("{}", commit_message);
-    print!("[y]es / [e]dit / [n]o: ");
-    io::stdout().flush().unwrap();
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-    let choice = input.trim().to_lowercase();
-
-    match choice.as_str() {
-        "y" | "yes" => {
-            commit(&commit_message);
-        }
-        "e" | "edit" => {
-            let edited = edit_message(&commit_message);
-            commit(&edited);
-        }
-        "n" | "no" => {
+    // Interactive inline editing
+    let final_message = match edit_message_inline(&commit_message) {
+        Ok(msg) => msg,
+        Err(EditError::Aborted) => {
             eprintln!("Aborted.");
             std::process::exit(1);
         }
-        _ => {
-            eprintln!("Invalid choice. Aborted.");
+        Err(EditError::Other(e)) => {
+            eprintln!("Error: {}", e);
             std::process::exit(1);
         }
-    }
+    };
+
+    commit(&final_message);
 }
 
 fn get_config_path() -> PathBuf {
@@ -318,29 +313,27 @@ fn generate_commit_message(api_key: &str, model: &str, diff: &str) -> Result<Str
     Ok(api_response.content[0].text.trim().to_string())
 }
 
-fn edit_message(message: &str) -> String {
-    let editor = env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+fn edit_message_inline(message: &str) -> Result<String, EditError> {
+    let mut rl = DefaultEditor::new().map_err(|e| EditError::Other(e.to_string()))?;
 
-    let temp_file = "/tmp/gy_commit_msg.txt";
-    std::fs::write(temp_file, message).expect("Failed to write temp file");
+    println!("\n{}", message);
+    println!("\nPress Enter to commit, or edit the message below:");
+    println!("(Esc or Ctrl+C to abort)\n");
 
-    let status = Command::new(&editor)
-        .arg(temp_file)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .expect("Failed to launch editor");
-
-    if !status.success() {
-        eprintln!("Editor exited with error. Using original message.");
-        return message.to_string();
+    match rl.readline_with_initial("", (message, "")) {
+        Ok(line) => {
+            let edited = line.trim();
+            if edited.is_empty() {
+                return Err(EditError::Other(
+                    "Commit message cannot be empty".to_string(),
+                ));
+            }
+            Ok(edited.to_string())
+        }
+        Err(ReadlineError::Interrupted) => Err(EditError::Aborted),
+        Err(ReadlineError::Eof) => Err(EditError::Aborted),
+        Err(e) => Err(EditError::Other(e.to_string())),
     }
-
-    std::fs::read_to_string(temp_file)
-        .expect("Failed to read edited file")
-        .trim()
-        .to_string()
 }
 
 fn commit(message: &str) {

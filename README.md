@@ -20,12 +20,12 @@ gy
 The tool will:
 1. Read your staged changes
 2. Generate a conventional commit message using Claude
-3. Prompt you to accept, edit, or reject
+3. Present an interactive prompt where you can edit the message inline
 
-Options:
-- `y` or `yes` - commit with the generated message
-- `e` or `edit` - open `$EDITOR` to modify the message before committing
-- `n` or `no` - abort
+Controls:
+- Press `Enter` to commit with the message as-is
+- Edit the message inline and press `Enter` to commit with changes
+- Press `Esc` or `Ctrl+C` to abort
 
 ## Configuration
 
@@ -69,9 +69,14 @@ Subsequent runs (uses saved key):
 ```bash
 $ git add .
 $ gy
+
 feat: add user authentication module
 
-[y]es / [e]dit / [n]o: y
+Press Enter to commit, or edit the message below:
+(Esc or Ctrl+C to abort)
+
+feat: add user authentication module█
+
 [main def5678] feat: add user authentication module
  3 files changed, 200 insertions(+)
 ```
