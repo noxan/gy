@@ -69,14 +69,8 @@ Subsequent runs (uses saved key):
 ```bash
 $ git add .
 $ gy
-
-feat: add user authentication module
-
-Press Enter to commit, or edit the message below:
-(Esc or Ctrl+C to abort)
-
 feat: add user authentication module█
-
+Enter to commit • Esc to abort
 [main def5678] feat: add user authentication module
  3 files changed, 200 insertions(+)
 ```
