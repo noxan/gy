@@ -316,6 +316,8 @@ fn generate_commit_message(api_key: &str, model: &str, diff: &str) -> Result<Str
 fn edit_message_inline(message: &str) -> Result<String, EditError> {
     let mut rl = DefaultEditor::new().map_err(|e| EditError::Other(e.to_string()))?;
 
+    eprintln!("Enter to commit • Esc to abort");
+
     match rl.readline_with_initial("", (message, "")) {
         Ok(line) => {
             let edited = line.trim();
@@ -324,7 +326,6 @@ fn edit_message_inline(message: &str) -> Result<String, EditError> {
                     "Commit message cannot be empty".to_string(),
                 ));
             }
-            println!("Enter to commit • Esc to abort");
             Ok(edited.to_string())
         }
         Err(ReadlineError::Interrupted) => Err(EditError::Aborted),
