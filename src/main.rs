@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 #[command(about = "AI-powered git commit message generator", long_about = None)]
 struct Args {
     /// Model to use for generation
-    #[arg(long, default_value = "claude-sonnet-4-20250514")]
+    #[arg(long, default_value = "claude-haiku-4-5-20251001")]
     model: String,
 }
 
@@ -159,7 +159,7 @@ fn save_config(config: &Config) -> Result<(), String> {
 
 fn validate_api_key(api_key: &str) -> Result<(), String> {
     let request = AnthropicRequest {
-        model: "claude-sonnet-4-20250514".to_string(),
+        model: "claude-haiku-4-5-20251001".to_string(),
         max_tokens: 10,
         messages: vec![Message {
             role: "user".to_string(),

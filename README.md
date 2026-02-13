@@ -37,7 +37,7 @@ You can also set the API key via environment variable (takes precedence over con
 export ANTHROPIC_API_KEY=your_api_key_here
 ```
 
-Optionally override the model:
+Default model is Claude Haiku 4.5. Optionally override the model:
 
 ```bash
 gy --model claude-sonnet-4-20250514
